@@ -332,6 +332,13 @@ class ApplicationConfig {
 		boolValues["read_only_auth_scope"] = false;
 		// - Flag to cleanup local files when using --download-only
 		boolValues["cleanup_local_files"] = false;
+		// - Perform a permanentDelete on deletion activities
+		boolValues["permanent_delete"] = false;
+		// - Controls how the application handles the Microsoft SharePoint 'feature' of modifying all PDF, MS Office & HTML files with added XML content post upload
+		//   There are 2 ways to solve this:
+		//   1. Download the modified file immediately after upload as per v2.4.x (default)
+		//   2. Create a new online version of the file, which then contributes to the users 'quota'
+		boolValues["create_new_file_version"] = false;
 		
 		// Webhook Feature Options
 		boolValues["webhook_enabled"] = false;
@@ -1411,6 +1418,7 @@ class ApplicationConfig {
 		addLogEntry("Config option 'sync_dir_permissions'         = " ~ to!string(getValueLong("sync_dir_permissions")));
 		addLogEntry("Config option 'sync_file_permissions'        = " ~ to!string(getValueLong("sync_file_permissions")));
 		addLogEntry("Config option 'space_reservation'            = " ~ to!string(getValueLong("space_reservation")));
+		addLogEntry("Config option 'permanent_delete'             = " ~ to!string(getValueBool("permanent_delete")));
 		
 		// curl operations
 		addLogEntry("Config option 'application_id'               = " ~ getValueString("application_id"));
@@ -2352,10 +2360,9 @@ class ApplicationConfig {
 	
 	// Has a 'no-sync' task been requested?
 	bool hasNoSyncOperationBeenRequested() {
-	
-		bool noSyncOperation = false;
-	
 		// Are we performing some sort of 'no-sync' task?
+		// - Are we performing a logout?
+		// - Are we performing a reauth?
 		// - Are we obtaining the Office 365 Drive ID for a given Office 365 SharePoint Shared Library?
 		// - Are we displaying the sync status?
 		// - Are we getting the URL for a file online?
@@ -2366,8 +2373,21 @@ class ApplicationConfig {
 		// - Are we just deleting a directory online, without any sync being performed?
 		// - Are we renaming or moving a directory?
 		// - Are we displaying the quota information?
+		bool noSyncOperation = false;
 		
 		// Return a true|false if any of these have been set, so that we use the 'dry-run' DB copy, to execute these tasks, in case the client is currently operational
+		
+		// --logout
+		if (getValueBool("logout")) {
+			// flag that a no sync operation has been requested
+			noSyncOperation = true;
+		}
+		
+		// --reauth
+		if (getValueBool("reauth")) {
+			// flag that a no sync operation has been requested
+			noSyncOperation = true;
+		}
 		
 		// --get-sharepoint-drive-id - Get the SharePoint Library drive_id
 		if (getValueString("sharepoint_library_name") != "") {

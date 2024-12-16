@@ -30,9 +30,6 @@ import log;
 import util;
 import curlEngine;
 
-// Shared variables between classes
-shared bool debugHTTPResponseOutput = false;
-
 // Define the 'OneDriveException' class
 class OneDriveException: Exception {
 	// https://docs.microsoft.com/en-us/onedrive/developer/rest-api/concepts/errors
@@ -87,7 +84,6 @@ class OneDriveApi {
 	string authScope = "";
 	const(char)[] refreshToken = "";
 	bool dryRun = false;
-	bool debugResponse = false;
 	bool keepAlive = false;
 
 	this(ApplicationConfig appConfig) {
@@ -148,11 +144,6 @@ class OneDriveApi {
 
 		// Did the user specify --dry-run
 		dryRun = appConfig.getValueBool("dry_run");
-		
-		// Did the user specify --debug-https
-		debugResponse = appConfig.getValueBool("debug_https");
-		// Flag this so if webhooks are being used, it can also be consumed
-		debugHTTPResponseOutput = appConfig.getValueBool("debug_https");
 		
 		// Set clientId to use the configured 'application_id'
 		clientId = appConfig.getValueString("application_id");
@@ -476,9 +467,11 @@ class OneDriveApi {
 			} else {
 				// The application cannot be authorised when using --dry-run as we have to write out the authentication data, which negates the whole 'dry-run' process
 				addLogEntry();
-				addLogEntry("The application requires authorisation, which involves saving authentication data on your system. Note that authorisation cannot be completed with the '--dry-run' option.");
+				addLogEntry("The application requires authorisation, which involves saving authentication data on your system. Application authorisation cannot be completed when using the '--dry-run' option.");
 				addLogEntry();
-				addLogEntry("To exclusively authorise the application without performing any additional actions, use this command: onedrive");
+				addLogEntry("To authorise the application please use your original command without '--dry-run'.");
+				addLogEntry();
+				addLogEntry("To exclusively authorise the application without performing any additional actions, do not add '--sync' or '--monitor' to your command line.");
 				addLogEntry();
 				forceExit();
 			}
@@ -639,6 +632,16 @@ class OneDriveApi {
 		performDelete(url);
 	}
 	
+	// https://learn.microsoft.com/en-us/graph/api/driveitem-permanentdelete?view=graph-rest-1.0
+	void permanentDeleteById(const(char)[] driveId, const(char)[] id, const(char)[] eTag = null) {
+		// string[string] requestHeaders;
+		const(char)[] url = driveByIdUrl ~ driveId ~ "/items/" ~ id ~ "/permanentDelete";
+		//TODO: investigate why this always fail with 412 (Precondition Failed)
+		// if (eTag) requestHeaders["If-Match"] = eTag;
+		// as per documentation, a permanentDelete needs to be a HTTP POST
+		performPermanentDelete(url);
+	}
+	
 	// https://docs.microsoft.com/en-us/onedrive/developer/rest-api/api/driveitem_post_children
 	JSONValue createById(string parentDriveId, string parentId, JSONValue item) {
 		string url = driveByIdUrl ~ parentDriveId ~ "/items/" ~ parentId ~ "/children";
@@ -660,14 +663,15 @@ class OneDriveApi {
 	// https://docs.microsoft.com/en-us/onedrive/developer/rest-api/api/driveitem_createuploadsession
 	//JSONValue createUploadSession(string parentDriveId, string parentId, string filename, string eTag = null, JSONValue item = null) {
 	JSONValue createUploadSession(string parentDriveId, string parentId, string filename, const(char)[] eTag = null, JSONValue item = null) {
-		// string[string] requestHeaders;
+		string[string] requestHeaders;
 		string url = driveByIdUrl ~ parentDriveId ~ "/items/" ~ parentId ~ ":/" ~ encodeComponent(filename) ~ ":/createUploadSession";
 		// eTag If-Match header addition commented out for the moment
 		// At some point, post the creation of this upload session the eTag is being 'updated' by OneDrive, thus when uploadFragment() is used
 		// this generates a 412 Precondition Failed and then a 416 Requested Range Not Satisfiable
 		// This needs to be investigated further as to why this occurs
-		// if (eTag) requestHeaders["If-Match"] = eTag;
-		return post(url, item.toString());
+		
+		if (eTag) requestHeaders["If-Match"] = to!string(eTag);
+		return post(url, item.toString(), requestHeaders);
 	}
 	
 	// https://dev.onedrive.com/items/upload_large_files.htm
@@ -820,7 +824,7 @@ class OneDriveApi {
 		JSONValue response;
 
 		try {
-			response = post(tokenUrl, postData, true, "application/x-www-form-urlencoded");
+			response = post(tokenUrl, postData, null, true, "application/x-www-form-urlencoded");
 		} catch (OneDriveException exception) {
 			// an error was generated
 			if ((exception.httpStatusCode == 400) || (exception.httpStatusCode == 401)) {
@@ -967,6 +971,14 @@ class OneDriveApi {
 		bool validateJSONResponse = false;
 		oneDriveErrorHandlerWrapper((CurlResponse response) {
 			connect(HTTP.Method.del, url, false, response, requestHeaders);
+			return curlEngine.execute();
+		}, validateJSONResponse, callingFunction, lineno);
+	}
+	
+	private void performPermanentDelete(const(char)[] url, string[string] requestHeaders=null, string callingFunction=__FUNCTION__, int lineno=__LINE__) {
+		bool validateJSONResponse = false;
+		oneDriveErrorHandlerWrapper((CurlResponse response) {
+			connect(HTTP.Method.post, url, false, response, requestHeaders);
 			return curlEngine.execute();
 		}, validateJSONResponse, callingFunction, lineno);
 	}
@@ -1130,10 +1142,10 @@ class OneDriveApi {
 		}, validateJSONResponse, callingFunction, lineno);
 	}
 
-	private JSONValue post(const(char)[] url, const(char)[] postData, bool skipToken = false, const(char)[] contentType = "application/json", string callingFunction=__FUNCTION__, int lineno=__LINE__) {
+	private JSONValue post(const(char)[] url, const(char)[] postData, string[string] requestHeaders=null, bool skipToken = false, const(char)[] contentType = "application/json", string callingFunction=__FUNCTION__, int lineno=__LINE__) {
 		bool validateJSONResponse = true;
 		return oneDriveErrorHandlerWrapper((CurlResponse response) {
-			connect(HTTP.Method.post, url, skipToken, response);
+			connect(HTTP.Method.post, url, skipToken, response, requestHeaders);
 			curlEngine.setContent(contentType, postData);
 			return curlEngine.execute();
 		}, validateJSONResponse, callingFunction, lineno);
@@ -1187,8 +1199,8 @@ class OneDriveApi {
 				if (response.hasResponse) {
 					// Process the response
 					result = response.json();
-					// Print response if 'debugResponse' is flagged
-					if (debugResponse){
+					// Print response if 'debugHTTPSResponse' is flagged
+					if (debugHTTPSResponse){
 						if (debugLogging) {addLogEntry("Microsoft Graph API Response: " ~ response.dumpResponse(), ["debug"]);}
 					}
 					
